@@ -16,6 +16,7 @@
 #include <linux/mm.h>
 #include <linux/semaphore.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 #include <linux/timer.h>
 #include <linux/uaccess.h>
 #include <linux/vmalloc.h>
@@ -33,6 +34,8 @@
 
 __iomem void *prcmu_base = NULL;
 __iomem void *prcmu_tcdm_base = NULL;
+
+static DEFINE_SPINLOCK(osal_lock);
 extern struct outer_cache_fns outer_cache __read_mostly;
 
 /* DSP Load Monitoring */
@@ -843,6 +846,8 @@ module_param(enable_auto_pm, int, S_IWUSR|S_IRUGO);
  */
 void OSAL_DisablePwrRessource(t_nmf_power_resource resource, t_uint32 firstParam, t_uint32 secondParam)
 {
+	unsigned long flags;
+
 	switch (resource) {
 	case CM_OSAL_POWER_SxA_CLOCK: {
 		unsigned idx = COREIDX(firstParam);
@@ -872,7 +877,11 @@ void OSAL_DisablePwrRessource(t_nmf_power_resource resource, t_uint32 firstParam
 			pr_err("CM Driver(%s): can't disable regulator %s-mmsdp\n",
 			       __func__, osalEnv.mpc[idx].name);
 #ifdef CONFIG_HAS_WAKELOCK
+		spin_lock_irqsave(&osal_lock, flags);
+		BUG_ON(!wake_lock_active(&osalEnv.mpc[idx].wakelock));
 		wake_unlock(&osalEnv.mpc[idx].wakelock);
+		pr_err("%s: wakelock %s is inactive\n", __func__, osalEnv.mpc[idx].wakelock.name);
+		spin_unlock_irqrestore(&osal_lock, flags);
 #endif
 
 		/* Create and dispatch a shutdown service message */
@@ -967,6 +976,8 @@ void OSAL_DisablePwrRessource(t_nmf_power_resource resource, t_uint32 firstParam
  */
 t_cm_error OSAL_EnablePwrRessource(t_nmf_power_resource resource, t_uint32 firstParam, t_uint32 secondParam)
 {
+	unsigned long flags;
+
 	switch (resource) {
 	case CM_OSAL_POWER_SxA_CLOCK: {
 		unsigned idx = COREIDX(firstParam);
@@ -976,9 +987,14 @@ t_cm_error OSAL_EnablePwrRessource(t_nmf_power_resource resource, t_uint32 first
 			return CM_INVALID_PARAMETER;
 		}
 
+
 		/* Start the DSP */
 #ifdef CONFIG_HAS_WAKELOCK
+		spin_lock_irqsave(&osal_lock, flags);
+		BUG_ON(wake_lock_active(&osalEnv.mpc[idx].wakelock));
+		pr_err("%s: wakelock %s is active\n", __func__, osalEnv.mpc[idx].wakelock.name);
 		wake_lock(&osalEnv.mpc[idx].wakelock);
+		spin_unlock_irqrestore(&osal_lock, flags);
 #endif
 		if (regulator_enable(osalEnv.mpc[idx].mmdsp_regulator) < 0)
 			pr_err("CM Driver(%s): can't enable regulator %s-mmsdp\n", __func__, osalEnv.mpc[idx].name);
@@ -996,6 +1012,8 @@ t_cm_error OSAL_EnablePwrRessource(t_nmf_power_resource resource, t_uint32 first
 		}
 
 		cm_debug_create_tcm_file(idx);
+
+
 		break;
 	}
 	case CM_OSAL_POWER_SxA_AUTOIDLE:
